@@ -6,7 +6,6 @@
             [clojure.data.xml :as xml]
         ))
 
-(defn read-stdin [] (slurp *in*))
 (defmulti diff (fn [tag ins del]
                  tag))
 (defn diff-with-reader [reader ins del]

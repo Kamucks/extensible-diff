@@ -1,6 +1,6 @@
-(ns mdiff.diff
+(ns extensible_diff.diff
 
-  (:require [mdiff.fx :as fx :refer [->Annotated]]
+  (:require [extensible-diff.rec :as fx :refer [->Annotated]]
             [clojure.algo.generic.functor :as f]
             [valuehash.api :as v]
             [clojure.pprint]
@@ -735,9 +735,7 @@
   (->Merging (f/fmap f left) (f/fmap f right)))
 (defmulti merge-alg* (fn [{:keys [left right]}]
                        [(class left) (class right)]))
-;just pushes the conflict down the keys of the tree.
-;We can definitely do this, because we have two associatives.
-;
+
 (defn merge-assoc [{:keys [left right]}]
   (let [left-keys (into #{} (keys left))
         right-keys (into #{} (keys right))
@@ -758,20 +756,14 @@
      {}
      all-keys)))
 
-(defn merge-diffvec [{:keys [left right]}]
-  (let [left (:diffed left)
-        right (:diffed right)]
-    ()))
-
-(defmulti merging
+(defmulti merge-coalg
   (fn [{:keys [diff unmerged]}]
     ;Diff could be, e.g. map,  scalar or
     ;change. unmerged is annotated or leaf.
-    ;
     (class diff)))
 
-(defmethod merging :default 
-  [{:keys [diff unmerged]}]
+(defmethod merge-coalg :default 
+  [{:keys [diff unmerged] :as conflict}]
   (let [pushdown (fn [acc k v]
                    (if-let [sub-ins (get k diff)]
                      ;if diff has this key, push down
@@ -783,16 +775,20 @@
                (associative? diff))
           (reduce-kv pushdown {} (:unannotated unmerged))
           (and (instance? DiffVec diff)
-               (sequential? (unannotate unmerged))
-               )
-          (diffit.vec/patch unmerged diff)
+               (sequential? (:unannotated unmerged)))
+          (diffit.vec/patch unmerged (:diffed diff))
           ;ins must be a leaf. Unconditionally
           ;replace unmerged with leaf.
           :else
-          diff)))
+          conflict)))
 
+(defmethod merge-coalg DiffVec
+  [{:keys [diff unmerged] :as conflict}]
+  (if (sequential? (:unannotated unmerged))
+    (diffit.vec/patch unmerged (:diffed diff))
+    conflict))
 
-(defmethod merging Change
+(defmethod merge-coalg Change
   [{:keys [diff unmerged] :as conflict}]
   (cond (and (annotated? unmerged)
              (= (this-hash unmerged) (:del diff)))
@@ -801,176 +797,8 @@
         (:del diff)
         :else conflict))
 
-(defmethod merging Substituted [{:keys [diff unmerged]}]
+(defmethod merge-coalg Substituted [{:keys [diff unmerged]}]
   (unsub diff unmerged))
 
-(defn merge-vec [{:keys [diffed]}
-                 {:keys [ann unannotated] :as unmerged}]
-  (let [current (volatile! unmerged)
-        insert-at (fn [start x]
-                    (let [[before after] (split-at start current)]
-                      (vreset! current (into [] (concat before x after)))))
-        delete-at (fn [start n hash]
-                    (let
-                     [[before after]
-                      (split-at start current)
-                      deletion (into [] (take after n))
-                      deletion-hash (v/md5-str deletion)]
-                      (if (= hash deletion-hash)
-                        (vreset!
-                         current
-                         (into []
-                               (concat before
-                                       (drop n after))))
-                        (->Conflict hash deletion))))]
-    (for [[tag start x hash] diffed]
-      (if (= tag :+)
-        (insert-at start x)
-        (delete-at start x hash)))))
-
-(defn pushdown-conflict
- "Pushes down conflict as far as possible.
-  If we have (hash del) = (thishash unmerged)
-  or, del = unmerged, return a mergable.
-  Otherwise, if (keys unmerged = keys del),
-  push down conflict to childrin.
-  Lastly, if (keys ins != keys unmerged), cannot push
-  change down more. Stop." [{:keys [change unmerged]}]
-  (let [{:keys [ins del]} change]
-    (cond
-      (or (= del unmerged)
-          (= del (this-hash unmerged)))
-      (->Mergable ins unmerged))))
-  
-;; (defmulti merge-change
-;;   (fn [{:keys [patch unmerged]}]
-;;     (class (:ins patch))))
-;; (defmethod merge-change :default
-;;   [{:key [patch unmerged]}]
-;;   ())
-;; (defmulti conflict-gcp
-;;   (fn [{:keys [patch unmerged] :as conflict} & _]
-;;     (class unmerged)))
-
-;; (defmethod conflict-gcp Annotated
-;;   [{:keys [patch unmerged] :as conflict} patcher]
-;;   (let [{:keys [ins del]} patch
-;;         {:keys [ann unannotated]} unmerged]
-;;     ;first, check if we can apply the patch right here.
-;;     (if (= (this-hash del) (this-hash patch))
-;;       ;apply patch.
-;;       (patcher patch ins)
-;;       conflict)))
-
-;; (defmethod merge-change Annotated
-;;   [{:keys [patch unmerged] :as conflict}]
-;;   (let [{:keys [ins del]} patch]
-;;     (if (and (annotated? unmerged)
-;;              (= del (this-hash unmerged)))
-;;       ins
-;;       conflict)))
-
-;; (defmulti merge-patch
-;;   ;handle cases where patch is Change, Substituted,
-;;   ;or other. unmerged MUST be annotated.
-;;   (fn [{:keys [patch unmerged] :as conflict}]
-;;     (class patch)))
-;; (defmethod merge-patch :default
-;;   [conflict] conflict)
-;; (defmethod merge-patch Change
-;;   [conflict] (merge-change conflict))
-;; (defmethod merge-patch Substituted
-;;   [{:keys [hash]} unmerged] )
-;; (defmethod merge-patch Substituted)
-;; (defmethod merge-change [Annotated Annotated]
-;;   [{:keys [patch unmerged]}]
-;;   (let [{:keys [ins del]} patch]
-;;     ))
-
-
-;; (defmulti merge-annotated
-;;   ;need cases for the patch being a Change,
-;;   ;a VectorChange, or an annotated recursive
-;;   ;node that's associative, or a leaf node.
-;;   ;Need cases for unmerged being an Annotated
-;;   ;or a leaf node.
-  
-;;   (fn [{:keys [patch unmerged]}]
-;;     [(class (:ins patch))
-;;      (class unmerged)]))
-
-;; (defmethod merge-annotated :default
-;;   [conflict])
-
-;; (defmethod merge-annotated [Annotated Annotated]
-;;   [{:keys [ins del] :as change}
-;;    unmerged]
-;;   (if (= (this-hash ins) (this-hash del) (this-hash unmerged)))
-;;   (if (= (this-hash ins) (this-hash del))
-;;     (->Substituted (this-hash ins))
-;;     (let [ins-children (:unannotated ins)
-;;           del-children (:unannotated del)
-;;           {:keys [ins-hash del-hash deleted inserted common]}
-;;           (get-common-subtrees (f/fmap :unannotated ch))]
-;;       (if (= (keys ins-children) (keys del-children))
-;;     ;push change down the insertion tree.
-;;         (->Annotated
-;;          (->DiffHashed ins-hash del-hash nil)
-;;          (reduce-kv
-;;        ;mark all children as changes.
-;;           (fn [acc k v]
-;;             (let [deleted-child
-;;                   (get del-children k)
-;;                   subs-child (if (annotated? deleted-child)
-;;                                (this-hash deleted-child)
-;;                                deleted-child)]
-;;               (if (= v deleted-child)
-;;                 acc
-;;                 (assoc acc k
-;;                        (->Change v
-;;                                  subs-child)))))
-;;           {}
-;;           (:unannotated ins)))
-;;     ;keys are not the same. Irreducible change.
-;;     ;Wrap inserted children with InChange.
-;;         (f/fmap
-;;          (fn [child] (->InChange common child)) (:ins ch))))))
-
-
-
-;; (defmethod merge-annotated [Change true]
-;;   [{:keys [patch
-;;            unmerged] :as conflict}]
-;;   (let [{:keys [ins del]} patch
-;;         {:keys [ann unanotated]} unmerged]
-;;     (if (= (:this-hash ann) (:this-hash del))
-;;       (->Inserted (:unannotated ins))
-;;       conflict)))
-;;     ;The insert should either match the hash
-;;     ;of del, or be equal.
-;;   (let [{:keys [ins del]} patch]
-;;     (if (annotated? unmerged)
-      
-;;       (if (= unmerged ins)
-;;         (->Inserted ins)
-;;         conflict))))
-
-;; ;Contains map of metavariables mapping to subtrees.
-;; (defrecord VecMap [m v])
-
-
-;; ;{ hash0: {:a {:d 1} :b 2} hash2: {:a {:d 1} :c 3} }
-;; ;gcp: hash0: {:outer {:a $d :b 2 } hash2: {:outer {:a $d :c 3}}
-;; ;pull up common subtrees for every tree in the vector,
-;; ;putting them in m. Then, values can be recursively
-;; ;substituted to recreate the unsubbed vector.
-
-;; ;Like VecMap, except contains an edit-script
-;; ;[[:- _deleted] [:+ _inserted] ...]
-
-
-;; (extend-protocol Maplike
-;;   VecChange
-;;   (view-map [self] (:m self))
-;;   (merge-with [self other]
-;;     ()))
+(defn merge-annotated [conflict]
+  (fx/refold-free coll? identity merge-coalg identity))

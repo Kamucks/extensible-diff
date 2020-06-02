@@ -20,6 +20,7 @@
                  [com.velisco/tagged "0.5.0"]
                  [org.clojure/data.xml "0.0.8"]
                  [net.sf.cssbox/pdf2dom "1.2"]
+                 [org.clojure/tools.cli "1.0.194"]
                  [diffit "1.0.0"]]
   :main ^:skip-aot extensible-diff.core
   :target-path "target/%s"

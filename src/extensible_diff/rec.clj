@@ -1,4 +1,4 @@
-(ns mdiff.fx
+(ns extensible-diff.rec
   (:require [cloroutine.core :refer [cr]]
             [net.cgrand.xforms :as x]
             [clojure.algo.generic.functor :as f]
@@ -127,73 +127,3 @@ with coalgebras run through supplied transformations." [branch? f coalg alg coal
                      (fn [ch] (if (satisfies? Comonad ch) (extract ch) ch)) childs))
                    nil
                    childs))) tr))
-(def ^:dynamic *coroutine*)
-(def ^:dynamic *result*)
-(def ^:dynamic *bind*)
-
-(defn run [c b]
-  (binding [*coroutine* c
-            *bind* (fn [f fa] #(b f fa))] (c)))
-(defn fork [c b r]
-  (binding [*result* r]
-    (c run b)))
-(defn perform [m]
-  (*bind* (partial fork *coroutine* *bind*) m))
-(defn resume [] *result*)
-(defmacro mdo [monad & body]
-  `(trampoline ( run (cr {perform resume} ((first ~monad) (do ~@body))) (second ~monad))))
-
-(defrecord Free [run])
-(defrecord Flatmap [sub cont])
-
-(def free-monad
-  [identity
-   (fn [f free-fa]
-     { :sub f :cont free-fa})])
-(defn unwrap [fa] (:unwrapped fa))
-
-(defmethod f/fmap Free [f fa]
-  (->Free (f/fmap f (unwrap fa))))
-
-(def pure (fn [a] (fn [ar alg] (ar a))))
-(def flatmap (fn [f fa]
-               (fn [br alg]
-                 ((fa)
-                  (fn [a]
-                    ((f a) br alg))
-                  alg))))
-
-(defn fltmap [fmap f free-a]
-  (if (fn? free-a)
-     #(fmap (partial fltmap fmap f) (free-a))
-     #(f free-a)))
-
-(defn impure [fmap fa]
-  (fn [ar alg] (alg (fmap ar fa))))
-(defn liftf [fmap f]
-  (fn [a] (impure fmap (f a))))
-(def monad-f
-  [pure flatmap])
-
-(defn ffmap [f fa]
-  (flatmap (fn [a] (pure (f a))) fa))
-(defn wrap
-  ([fmap ffa]
-   (fn [ar alg]
-     (alg (fmap (fn [fa] (fa ar alg)) ffa)))))
-
-(defn lift-free [branch? children a]
-  (fn [ar alg]
-    (mdo (monad-f ar alg)
-     (perform (fn [_ _]
-                (if (branch? a)
-                 (alg
-                  (f/fmap
-                   (partial lift-free branch? children)
-                   (children a)))
-                 (ar a)))))))
-(def frei (mdo free-monad
-      (let [x (perform (->Flatmap inc 1))]
-        (+ x 1))))
-(def inner (:cont frei))
-((:sub frei) ((:sub inner) (:cont inner)))
