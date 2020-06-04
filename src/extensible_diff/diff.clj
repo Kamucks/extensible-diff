@@ -1,6 +1,6 @@
-(ns extensible_diff.diff
+(ns mdiff.diff
 
-  (:require [extensible-diff.rec :as fx :refer [->Annotated]]
+  (:require [mdiff.fx :as fx :refer [->Annotated]]
             [clojure.algo.generic.functor :as f]
             [valuehash.api :as v]
             [clojure.pprint]
@@ -85,7 +85,7 @@
       ;If its not a branch, just return unmodified. ))
 (defn- annotated-child-hashes [annotated]
   (conj (get-in annotated [:ann :child-hashes])
-        { (get-in annotated [:ann :this-hash]) annotated }))
+        {(get-in annotated [:ann :this-hash]) annotated}))
 
 (defn- get-or-empty [child]
   (if (instance? Annotated child)
@@ -127,14 +127,14 @@
 (defn hash-alg [branch?]
   (fn [c]
     (println (branch? c))
-   (if (branch? c)
-     (->Annotated
-      (v/md5-str (f/fmap (fn [x] (if (instance? Annotated x)
-                                   (:ann x)
-                                   (v/md5-str x)))
-                         c))
-      c)
-     c)))
+    (if (branch? c)
+      (->Annotated
+       (v/md5-str (f/fmap (fn [x] (if (instance? Annotated x)
+                                    (:ann x)
+                                    (v/md5-str x)))
+                          c))
+       c)
+      c)))
 
 (defn annotate-rec "annotates with hashes, recursively."
   ([branch? alg coalg tr]
@@ -192,9 +192,9 @@
   (reduce-kv (fn [acc _ v]
                (if (instance? Substituted v)
                  (do (println v)
-                  (assoc acc
-                         (:hash v)
-                         (get child-dict (:hash v))))
+                     (assoc acc
+                            (:hash v)
+                            (get child-dict (:hash v))))
                  acc))
              {}
              children))
@@ -224,87 +224,87 @@
         del-children (:unannotated del)
         {:keys [ins-hash del-hash deleted inserted common]}
         (get-common-subtrees ch)]
-   (if (= (keys ins-children) (keys del-children))
+    (if (= (keys ins-children) (keys del-children))
     ;push change down the insertion tree.
-     (->Annotated
-      (->DiffHashed ins-hash del-hash nil)
-      (reduce-kv
+      (->Annotated
+       (->DiffHashed ins-hash del-hash nil)
+       (reduce-kv
        ;mark all children as changes.
-       (fn [acc k v] (assoc acc k (->Change v (get del-children k))))
-       {}
-       (:unannotated ins)))
+        (fn [acc k v] (assoc acc k (->Change v (get del-children k))))
+        {}
+        (:unannotated ins)))
     ;keys are not the same. Irreducible change.
     ;Go through and mark Inserted/Deleted/Substituted
      ;on insertion context, keeping outer change.
-    (let [new-children
-          (f/fmap
-           (fn [a]
-             (if-let [hash (get-in a [:ann :this-hash])]
-               (let [subst (get common hash)
-                     deleted (get deleted hash)
-                     inserted (get inserted hash)]
-                 (cond
-                   subst (->Substituted hash)
+      (let [new-children
+            (f/fmap
+             (fn [a]
+               (if-let [hash (get-in a [:ann :this-hash])]
+                 (let [subst (get common hash)
+                       deleted (get deleted hash)
+                       inserted (get inserted hash)]
+                   (cond
+                     subst (->Substituted hash)
                          ;can't substitute. Must be either deleted
                          ;or inserted. 
-                   deleted (->Deleted a)
+                     deleted (->Deleted a)
                ;if it's inserted, don't annotate. is assumed.
-                   :else (->InChange common a)))
+                     :else (->InChange common a)))
          ;Not annotated. Must be a leaf node. Don't annotate.
-               a))
+                 a))
         ;children of _both_ contexts.
-           (merge (:unannotated ins) (:unannotated del)))
-          subst (used-subs common new-children)
-          deleted (filter (partial instance? Deleted) ())]
-     (->Annotated
-      (->DiffHashed ins-hash del-hash subst)
-      new-children)))))
-
+             (merge (:unannotated ins) (:unannotated del)))
+            subst (used-subs common new-children)
+            deleted (filter (partial instance? Deleted) ())]
+        (->Annotated
+         (->DiffHashed ins-hash del-hash subst)
+         new-children)))))
 (defn gcp-assoc-branch [{:keys [ins del] :as ch}]
   (if (= (this-hash ins) (this-hash del))
     (->Substituted (this-hash ins))
-   (let [ins-children (:unannotated ins)
-         del-children (:unannotated del)
-         {:keys [ins-hash del-hash deleted inserted common]}
-         (get-common-subtrees (f/fmap :unannotated ch))
+    (let [ins-children (:unannotated ins)
+          del-children (:unannotated del)
+          {:keys [ins-hash del-hash deleted inserted common]}
+          (get-common-subtrees (f/fmap :unannotated ch))
          ;still zip common keys of insertion and deletion contexts.
          ;Common keys get Change. Non-common keys in insertion
          ;context get InChange. 
-         irred-rf (fn [acc k ins-ch]
-                    (println (str "acc " acc))
-                    (println (str "key " k))
-                    (println (str "ins-child " ins-ch))
-                    (if-let [del-ch (get del-children k)]
-                      ;common, so add a sub-change
-                      (assoc acc k (->NestedChange common ins-ch del-ch))
+          irred-rf (fn [acc k ins-ch]
+                     (println (str "acc " acc))
+                     (println (str "key " k))
+                     (println (str "ins-child " ins-ch))
+                     (if-let [del-ch (get del-children k)]
+                      ;common, so push down changes
+                      ;
+                       (assoc acc k (->Change ins-ch del-ch))
                       ;not common. just put InChange to allow
                       ;substitution.
-                      (assoc acc k (->InChange common ins-ch))))
-        
-         substitute (fn [child]
-                      (if (and (get common (this-hash child))
-                               (annotated? child))
-                        (->Substituted (this-hash child))
-                        (->InChange common child)))]
-   (if (= (keys ins-children) (keys del-children))
+                       (assoc acc k (->InChange common ins-ch))))
+
+          substitute (fn [child]
+                       (if (and (get common (this-hash child))
+                                (annotated? child))
+                         (->Substituted (this-hash child))
+                         (->InChange common child)))]
+      (if (= (keys ins-children) (keys del-children))
     ;push change down the insertion tree.
        ;(->Annotated
         ;(->Hashed ins-hash common)
-     (reduce-kv
+        (reduce-kv
        ;mark all children as changes.
-      (fn [acc k v]
-        (let [deleted-child
-              (get del-children k)
-              subs-child (if (annotated? deleted-child)
-                           (this-hash deleted-child)
-                           deleted-child)]
-          (if (= v deleted-child)
-            acc
-            (assoc acc k
-                   (->Change v
-                             deleted-child)))))
-      {}
-      (:unannotated ins))
+         (fn [acc k v]
+           (let [deleted-child
+                 (get del-children k)
+                 subs-child (if (annotated? deleted-child)
+                              (this-hash deleted-child)
+                              deleted-child)]
+             (if (= v deleted-child)
+               acc
+               (assoc acc k
+                      (->Change v
+                                deleted-child)))))
+         {}
+         (:unannotated ins))
     ;keys are not the same. Irreducible change.
     ;Wrap inserted children with InChange.
     ;Sub as many as possible
@@ -313,13 +313,13 @@
     ;;            ;(:unannotated (f/fmap substitute (:del ch)))
     ;;            (this-hash (:del ch))
     ;;            )
-     (->Change (reduce-kv irred-rf
-                          {}
-                          (get-in ch
-                                  [:ins :unannotated]))
-               (:del ch))))))
+        (->Change (reduce-kv irred-rf
+                             {}
+                             (get-in ch
+                                     [:ins :unannotated]))
+                  (:del ch))))))
 
-(defn- substitute-children-vec
+(defn- substitute-children
   [dictionary ins]
   (let [f (fn [child]
             (if
@@ -328,7 +328,7 @@
               (->Substituted (this-hash child))
               child))]
     ;(->Annotated ann (f/fmap f unannotated))
-    (f/fmap f (:unannotated ins))))
+    (f/fmap (comp unannotate f) ins)))
 
 (defrecord DiffVec [hash diffed])
 (defmethod f/fmap DiffVec [_ dv] dv)
@@ -349,7 +349,7 @@
          (insert-at start x del)]
      :- (let [[deletion edited]
               (delete-at start x del)]
-          [tag start x         
+          [tag start x
            (v/md5-str (vec deletion))
            edited])
      :else [tag start x del])))
@@ -360,13 +360,12 @@
    (let [new-edit (case tag
                     :+ (insert-at start x acc)
                     :- (delete-at start x acc))]
-     new-edit
-     )))
+     new-edit)))
 
 (defn edit-to-map [[tag start x]]
   (case tag
-    :+ { :tag :+ :start start :data x}
-    :- { :tag :- :start start :data x}))
+    :+ {:tag :+ :start start :data x}
+    :- {:tag :- :start start :data x}))
 
 (defn with-offset [{:keys [tag data] :as m}]
   (if (= tag :+)
@@ -404,25 +403,23 @@
    indices from original.
    Inserts do not increase index"
   [xf]
-  (let [
-        offset (volatile! 0)
+  (let [offset (volatile! 0)
         prev-end (volatile! 0)
         acc (volatile! nil)]
-   (fn
-     ([] (vreset! acc (xf)))
-     ([acc {:keys [tag start data] :as item}]
-      (let [orig-block-start (- start @offset)
-            block-length (case tag
-                           :+ (count data)
-                           :- (- data))
-            orig-block-end (case tag
-                             :+ orig-block-start
-                             :- (+ orig-block-start data))
-            ]
-        (vswap! offset (partial + block-length))
-        (merge item {:orig-start orig-block-start
-                     :orig-end orig-block-end})))
-     ([acc] (xf acc)))))
+    (fn
+      ([] (vreset! acc (xf)))
+      ([acc {:keys [tag start data] :as item}]
+       (let [orig-block-start (- start @offset)
+             block-length (case tag
+                            :+ (count data)
+                            :- (- data))
+             orig-block-end (case tag
+                              :+ orig-block-start
+                              :- (+ orig-block-start data))]
+         (vswap! offset (partial + block-length))
+         (merge item {:orig-start orig-block-start
+                      :orig-end orig-block-end})))
+      ([acc] (xf acc)))))
 (defn xdiff [xf ins del]
   (transduce xf
              (reductions
@@ -479,7 +476,7 @@
 
     ;; (comment (f/fma
     ;;   (fn [[tag start x]]
-        
+
     ;;     (if (= tag :+)
     ;;       [tag start x]
     ;;       [tag start x
@@ -497,11 +494,11 @@
 ;; (v/md5-str (subvec [1 2 2] 1 1))
 (defn gcp-seq [{:keys [ins del] :as ch}]
   (let [dict (get-in del [:ann :child-hashes])
-        sub-ins (substitute-children-vec dict ins)
-        sub-del (substitute-children-vec dict del)
+        sub-ins (substitute-children dict ins)
+        sub-del (substitute-children dict del)
         ins-v (:unannotated ins)
         del-v (:unannotated del)]
-    
+
     (->DiffVec
      (this-hash del)
      (diffit.vec/diff sub-ins sub-del))))
@@ -518,7 +515,7 @@
 
 
 (defmulti gcp
-  (fn [{:keys [ins del]}]    
+  (fn [{:keys [ins del]}]
       ;(println "ins")
       ;(clojure.pprint/pprint ins)
     [(class (:unannotated ins))
@@ -613,13 +610,13 @@
   (let [un-ins (:unannotated ins)
         un-del (:unannotated del)]
     (if (and (vector? un-ins) (vector? un-del))
-      (diff3 (substitute-children-vec
+      (diff3 (substitute-children
               dictionary
-              (:unannotated ins))
-             (substitute-children-vec
+              un-ins)
+             (substitute-children
               dictionary
-              (:unannotated del)))
-      (unannotate ins)
+              un-del))
+      (substitute-children dictionary un-ins)
                 ;(if-let [dhash (this-hash del)] dhash del)
       )))
 
@@ -628,14 +625,14 @@
         un-del (unannotate del)]
     (if (and (vector? un-ins) (vector? un-del))
       (let [dictionary (get-in del [:ann :child-hashes])]
-        (diff3 (substitute-children-vec
+        (diff3 (substitute-children
                 dictionary
                 (:unannotated ins))
-               (substitute-children-vec
+               (substitute-children
                 dictionary
                 (:unannotated del))))
       (do (println "not vect ")
-          (->Change (unannotate ins) del));(:unannotated ins)
+          (->Change (unannotate ins) (unannotate del)));(:unannotated ins)
                 ;(if-let [dhash (this-hash del)] dhash del)
       )))
 
@@ -650,27 +647,27 @@
 ;;     ;definitely bounded recursion.
 ;;     (do (println "not-subbed ") (diff-alg child))))
 (defmethod diff-alg InChange
-  [_ {:keys [dictionary child]}]
+  [branch? {:keys [dictionary child]}]
   (if (annotated? child)
     (do (println (str "subbed! " dictionary child))
         (if-let [subst (get dictionary (this-hash child))]
           (->Substituted (this-hash child))
           (:unannotated child)))
     ;definitely bounded recursion.
-    (do (println "not-subbed ") (diff-alg child))))
+    (do (println "not-subbed ") (diff-alg branch? child))))
 
 (defn diff-with-annotated
   ([branch? coalg change]
-   (diff-with-annotated branch? coalg identity change))
+   (diff-with-annotated branch? coalg
+                        (partial diff-alg branch?) change))
   ([branch? coalg alg change]
    ((fx/refold-free branch? identity
                     (partial diff-coalg branch? coalg)
-                    (partial alg branch?)) change)))
+                    alg) change)))
 (defn diff-unannotated [branch? coalg ins del]
   (diff-with-annotated
    branch?
    coalg
-   (partial diff-alg branch?)
    (->Change (annotate-rec branch? coalg ins)
              (annotate-rec branch? coalg del))))
 
@@ -683,7 +680,7 @@
   (diff-unannotated map? identity ins del))
 (defrecord Conflict [patch unmerged])
 (defprotocol ResolveHash
-          (resolve-hash [self hash]))
+  (resolve-hash [self hash]))
 (extend-protocol ResolveHash
   Annotated
   (resolve-hash [self hash]
@@ -735,7 +732,9 @@
   (->Merging (f/fmap f left) (f/fmap f right)))
 (defmulti merge-alg* (fn [{:keys [left right]}]
                        [(class left) (class right)]))
-
+;just pushes the conflict down the keys of the tree.
+;We can definitely do this, because we have two associatives.
+;
 (defn merge-assoc [{:keys [left right]}]
   (let [left-keys (into #{} (keys left))
         right-keys (into #{} (keys right))
@@ -756,14 +755,20 @@
      {}
      all-keys)))
 
-(defmulti merge-coalg
+(defn merge-diffvec [{:keys [left right]}]
+  (let [left (:diffed left)
+        right (:diffed right)]
+    ()))
+
+(defmulti merging
   (fn [{:keys [diff unmerged]}]
     ;Diff could be, e.g. map,  scalar or
     ;change. unmerged is annotated or leaf.
+    ;
     (class diff)))
 
-(defmethod merge-coalg :default 
-  [{:keys [diff unmerged] :as conflict}]
+(defmethod merging :default
+  [{:keys [diff unmerged]}]
   (let [pushdown (fn [acc k v]
                    (if-let [sub-ins (get k diff)]
                      ;if diff has this key, push down
@@ -775,20 +780,15 @@
                (associative? diff))
           (reduce-kv pushdown {} (:unannotated unmerged))
           (and (instance? DiffVec diff)
-               (sequential? (:unannotated unmerged)))
-          (diffit.vec/patch unmerged (:diffed diff))
+               (sequential? (unannotate unmerged)))
+          (diffit.vec/patch unmerged diff)
           ;ins must be a leaf. Unconditionally
           ;replace unmerged with leaf.
           :else
-          conflict)))
+          diff)))
 
-(defmethod merge-coalg DiffVec
-  [{:keys [diff unmerged] :as conflict}]
-  (if (sequential? (:unannotated unmerged))
-    (diffit.vec/patch unmerged (:diffed diff))
-    conflict))
 
-(defmethod merge-coalg Change
+(defmethod merging Change
   [{:keys [diff unmerged] :as conflict}]
   (cond (and (annotated? unmerged)
              (= (this-hash unmerged) (:del diff)))
@@ -797,8 +797,176 @@
         (:del diff)
         :else conflict))
 
-(defmethod merge-coalg Substituted [{:keys [diff unmerged]}]
+(defmethod merging Substituted [{:keys [diff unmerged]}]
   (unsub diff unmerged))
 
-(defn merge-annotated [conflict]
-  (fx/refold-free coll? identity merge-coalg identity))
+(defn merge-vec [{:keys [diffed]}
+                 {:keys [ann unannotated] :as unmerged}]
+  (let [current (volatile! unmerged)
+        insert-at (fn [start x]
+                    (let [[before after] (split-at start current)]
+                      (vreset! current (into [] (concat before x after)))))
+        delete-at (fn [start n hash]
+                    (let
+                     [[before after]
+                      (split-at start current)
+                      deletion (into [] (take after n))
+                      deletion-hash (v/md5-str deletion)]
+                      (if (= hash deletion-hash)
+                        (vreset!
+                         current
+                         (into []
+                               (concat before
+                                       (drop n after))))
+                        (->Conflict hash deletion))))]
+    (for [[tag start x hash] diffed]
+      (if (= tag :+)
+        (insert-at start x)
+        (delete-at start x hash)))))
+
+(defn pushdown-conflict
+  "Pushes down conflict as far as possible.
+  If we have (hash del) = (thishash unmerged)
+  or, del = unmerged, return a mergable.
+  Otherwise, if (keys unmerged = keys del),
+  push down conflict to childrin.
+  Lastly, if (keys ins != keys unmerged), cannot push
+  change down more. Stop." [{:keys [change unmerged]}]
+  (let [{:keys [ins del]} change]
+    (cond
+      (or (= del unmerged)
+          (= del (this-hash unmerged)))
+      (->Mergable ins unmerged))))
+
+;; (defmulti merge-change
+;;   (fn [{:keys [patch unmerged]}]
+;;     (class (:ins patch))))
+;; (defmethod merge-change :default
+;;   [{:key [patch unmerged]}]
+;;   ())
+;; (defmulti conflict-gcp
+;;   (fn [{:keys [patch unmerged] :as conflict} & _]
+;;     (class unmerged)))
+
+;; (defmethod conflict-gcp Annotated
+;;   [{:keys [patch unmerged] :as conflict} patcher]
+;;   (let [{:keys [ins del]} patch
+;;         {:keys [ann unannotated]} unmerged]
+;;     ;first, check if we can apply the patch right here.
+;;     (if (= (this-hash del) (this-hash patch))
+;;       ;apply patch.
+;;       (patcher patch ins)
+;;       conflict)))
+
+;; (defmethod merge-change Annotated
+;;   [{:keys [patch unmerged] :as conflict}]
+;;   (let [{:keys [ins del]} patch]
+;;     (if (and (annotated? unmerged)
+;;              (= del (this-hash unmerged)))
+;;       ins
+;;       conflict)))
+
+;; (defmulti merge-patch
+;;   ;handle cases where patch is Change, Substituted,
+;;   ;or other. unmerged MUST be annotated.
+;;   (fn [{:keys [patch unmerged] :as conflict}]
+;;     (class patch)))
+;; (defmethod merge-patch :default
+;;   [conflict] conflict)
+;; (defmethod merge-patch Change
+;;   [conflict] (merge-change conflict))
+;; (defmethod merge-patch Substituted
+;;   [{:keys [hash]} unmerged] )
+;; (defmethod merge-patch Substituted)
+;; (defmethod merge-change [Annotated Annotated]
+;;   [{:keys [patch unmerged]}]
+;;   (let [{:keys [ins del]} patch]
+;;     ))
+
+
+;; (defmulti merge-annotated
+;;   ;need cases for the patch being a Change,
+;;   ;a VectorChange, or an annotated recursive
+;;   ;node that's associative, or a leaf node.
+;;   ;Need cases for unmerged being an Annotated
+;;   ;or a leaf node.
+
+;;   (fn [{:keys [patch unmerged]}]
+;;     [(class (:ins patch))
+;;      (class unmerged)]))
+
+;; (defmethod merge-annotated :default
+;;   [conflict])
+
+;; (defmethod merge-annotated [Annotated Annotated]
+;;   [{:keys [ins del] :as change}
+;;    unmerged]
+;;   (if (= (this-hash ins) (this-hash del) (this-hash unmerged)))
+;;   (if (= (this-hash ins) (this-hash del))
+;;     (->Substituted (this-hash ins))
+;;     (let [ins-children (:unannotated ins)
+;;           del-children (:unannotated del)
+;;           {:keys [ins-hash del-hash deleted inserted common]}
+;;           (get-common-subtrees (f/fmap :unannotated ch))]
+;;       (if (= (keys ins-children) (keys del-children))
+;;     ;push change down the insertion tree.
+;;         (->Annotated
+;;          (->DiffHashed ins-hash del-hash nil)
+;;          (reduce-kv
+;;        ;mark all children as changes.
+;;           (fn [acc k v]
+;;             (let [deleted-child
+;;                   (get del-children k)
+;;                   subs-child (if (annotated? deleted-child)
+;;                                (this-hash deleted-child)
+;;                                deleted-child)]
+;;               (if (= v deleted-child)
+;;                 acc
+;;                 (assoc acc k
+;;                        (->Change v
+;;                                  subs-child)))))
+;;           {}
+;;           (:unannotated ins)))
+;;     ;keys are not the same. Irreducible change.
+;;     ;Wrap inserted children with InChange.
+;;         (f/fmap
+;;          (fn [child] (->InChange common child)) (:ins ch))))))
+
+
+
+;; (defmethod merge-annotated [Change true]
+;;   [{:keys [patch
+;;            unmerged] :as conflict}]
+;;   (let [{:keys [ins del]} patch
+;;         {:keys [ann unanotated]} unmerged]
+;;     (if (= (:this-hash ann) (:this-hash del))
+;;       (->Inserted (:unannotated ins))
+;;       conflict)))
+;;     ;The insert should either match the hash
+;;     ;of del, or be equal.
+;;   (let [{:keys [ins del]} patch]
+;;     (if (annotated? unmerged)
+
+;;       (if (= unmerged ins)
+;;         (->Inserted ins)
+;;         conflict))))
+
+;; ;Contains map of metavariables mapping to subtrees.
+;; (defrecord VecMap [m v])
+
+
+;; ;{ hash0: {:a {:d 1} :b 2} hash2: {:a {:d 1} :c 3} }
+;; ;gcp: hash0: {:outer {:a $d :b 2 } hash2: {:outer {:a $d :c 3}}
+;; ;pull up common subtrees for every tree in the vector,
+;; ;putting them in m. Then, values can be recursively
+;; ;substituted to recreate the unsubbed vector.
+
+;; ;Like VecMap, except contains an edit-script
+;; ;[[:- _deleted] [:+ _inserted] ...]
+
+
+;; (extend-protocol Maplike
+;;   VecChange
+;;   (view-map [self] (:m self))
+;;   (merge-with [self other]
+;;     ()))
