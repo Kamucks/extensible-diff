@@ -53,20 +53,23 @@
     (let [des (children tr)]
      (->TreeZipper nil tr (f/fmap )))))
 
-(defn refold-free "refold-free unfolds data and then refolds
-with provided coalgebra and algebra. branch? determines
-when the unfold should continue." [branch? f coalg alg]
-  (fn [tr]
-   (letfn
-    [(handle-node [ta]
-       (if (branch? ta)
-         (handle-branch (coalg ta))
+(defn- apply-when [ch]
+  (if (fn? ch)
+    (ch)
+    ch))
+(defn refold-free [branch? f coalg alg tr]
+  (letfn
+   [(handle-node [ta]
+      (if (branch? ta)
+        (fn []
+          (handle-branch (coalg ta)))
          ;coalgebras and algebras
          ;don't touch leaves.
-         (f ta)))
-     (handle-branch [b]
-       (alg (f/fmap handle-node b)))]
-     (handle-node tr))))
+        (f ta)))
+    (handle-branch
+      [b]
+      (alg (f/fmap (comp apply-when handle-node) b)))]
+    (trampoline handle-node tr)))
 
 (defn transfold
 "Transforming refold, analogous to transduce. Refolds
