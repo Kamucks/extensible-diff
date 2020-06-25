@@ -9,12 +9,18 @@
             [net.cgrand.xforms :as x]
             [diffit.vec])
   (:import [mdiff.fx Annotated]))
+(defprotocol Hashing
+  (this-hash [self]))
+(extend-protocol Hashing
+  Annotated
+  (this-hash [self]
+    (get-in self [:ann :unannotated])))
 
 (def none-hash (v/md5-str ::none))
 (def annotated? (partial instance? Annotated))
 (defn unannotate [x] (if (annotated? x) (:unannotated x) x))
 
-(defn this-hash [ann] (get-in ann [:ann :this-hash]))
+;(defn this-hash [ann] (get-in ann [:ann :this-hash]))
 (defn this-id [x] (if-let [hash (this-hash x)] hash x))
 (defprotocol Maplike
   (zip-with [self other]))
@@ -29,19 +35,14 @@
 
 ;Hashed collects all subtrees bottom-up
 (defrecord Hashed [this-hash child-hashes])
-(defrecord Unchanged [unchanged])
 
-(defmethod f/fmap Unchanged [f {:keys [unchanged]}]
-  (->Unchanged (f unchanged)))
 (defrecord DiffHashed [ins-hash del-hash substituted-children])
 ;Substituted subtree.
 (defrecord Substituted [hash])
 (defrecord Unbound [hash])
-(defrecord Inserted [inserted])
 (defrecord VecChange [del-hash edit-script kfn])
 (defmethod f/fmap Substituted [_ del] del)
-;Deleted subtree (just hash)
-(defrecord Deleted [hash])
+
 (defrecord InChange [dictionary child])
 (defrecord NestedChange [dictionary ins del])
 (defmethod f/fmap NestedChange [f {:keys [dictionary ins del]}]
@@ -52,13 +53,6 @@
 
 (defmethod f/fmap InChange [f {:keys [dictionary child]}]
   (->InChange dictionary (f/fmap f child)))
-
-(defmethod f/fmap Deleted [_ del] del)
-
-;Inserted child.
-(defrecord Inserted [child])
-(defmethod f/fmap Inserted [f {:keys [child]}]
-  (->Inserted (f/fmap f child)))
 
 (defrecord DiffAnnotated [this-hash substituted-children unannotated])
 ; a -> (annotated a);
@@ -330,9 +324,6 @@
     ;(->Annotated ann (f/fmap f unannotated))
     (f/fmap (comp unannotate f) ins)))
 
-(defrecord DiffVec [hash diffed])
-(defmethod f/fmap DiffVec [_ dv] dv)
-
 (defn- insert-at [start inserts v]
   (let [[before after] (split-at start v)]
     (concat before inserts after)))
@@ -340,6 +331,53 @@
   (let [[before after] (split-at start v)
         deleted (take n after)]
     (concat before (drop n after))))
+
+(defprotocol VectorEdit
+  ;apply edit to vector. Return changed *segment*,
+  ;not whole vector. Unconditionally does it.
+  (apply-edit-unchecked [self segment]))
+
+(defprotocol GetSegment
+  ;get affected segment.
+  (get-segment [self unedited]))
+
+(defn hashing-is-conflict? [hashing segment]
+  (not (= (this-hash hashing) (v/md5-str segment))))
+
+(defprotocol Conflictable
+  (is-conflict? [self segment]))
+(extend-protocol Conflictable
+  java.lang.Object
+  (is-conflict? [hashable segment]
+    (hashing-is-conflict? hashing segment)))
+
+(defrecord ConflictSegment [edit segment])
+(defrecord Deleted [hash start end])
+(defrecord Inserted [hash start insertion])
+(defrecord Unchanged [hash start end])
+(defrecord MergedSegment [segment])
+
+(defn apply-edit [vec-edit v]
+  (if (hashing-is-conflict? vec-edit v)
+    (->ConflictSegment vec-edit v)
+    (apply-edit-unchecked vec-edit v)))
+(extend-protocol VectorEdit
+  Deleted
+  (apply-edit-unchecked [{:key [start end]} unedited]
+    (delete-at start end))
+  (get-segment
+   [{:keys [start end]} unendited] self segment)
+  ;inserted does not need to be checked
+  ;for compatibility. Only surrounding context
+  ;need be checked
+  Inserted
+  (apply-edit-unchecked [{:keys [start end]} v]
+    (subvec v start end))
+  (get-segment [{:keys [start end]} unedited]
+    ))
+(defrecord DiffVec [hash diffed])
+(defmethod f/fmap DiffVec [_ dv] dv)
+
 
 (defn- app-edit
   ([del [tag start x]]
@@ -502,17 +540,6 @@
     (->DiffVec
      (this-hash del)
      (diffit.vec/diff sub-ins sub-del))))
-
-(gcp-seq  (annotate-rec coll? identity identity
-                        (->Change [2 3 4] [4 3 2])))
-
-(gcp-seq (->Change (->Annotated
-                    (->Hashed 0 {2 "data"})
-                    [(->Annotated {:this-hash 1} "data")])
-                   (->Annotated
-                    (->Hashed 2 {1 "asdf"})
-                    [(->Annotated {:this-hash 2} "old")])))
-
 
 (defmulti gcp
   (fn [{:keys [ins del]}]
@@ -699,7 +726,7 @@
              {:keys [ann unannotated] :as unmerged}]
   (let [{:keys [this-hash child-hashes]} ann]
     (if-let [unsubbed
-             (get child-hashes hash)]
+             (or (get child-hashes hash) (= this-hash hash))]
       unsubbed
       (->Unbound hash))))
 
@@ -708,16 +735,11 @@
     (= del (this-hash unmerged))
     (= del unmerged)))
 
-(defn merge-subst
-  [{:keys [hashed]} unmerged]
-  (unsub hashed unmerged))
 (defrecord Mergable [diff unmerged])
+(defmethod f/fmap Conflict [f {:keys [diff unmerged]}]
+  (defmethod f/fmap :default [f x] (f x))
+  (->Mergable (f/fmap f diff) (f/fmap f unmerged)))
 
-(defrecord Merging [left right])
-(defrecord Flipped [flipped])
-(defrecord Conflicting [left right])
-;vector conflict is a pair of edits.
-(defrecord VectorConflict [left right])
 (defprotocol IsChange
   (is-change? [self]))
 (extend-protocol IsChange
@@ -728,10 +750,10 @@
   DiffVec
   (is-change? [_] true))
 
-(defmethod f/fmap Merging [f {:keys [left right]}]
-  (->Merging (f/fmap f left) (f/fmap f right)))
-(defmulti merge-alg* (fn [{:keys [left right]}]
-                       [(class left) (class right)]))
+; (defmethod f/fmap Merging [f {:keys [left right]}]
+;   (->Merging (f/fmap f left) (f/fmap f right)))
+; (defmulti merge-alg* (fn [{:keys [left right]}]
+;                        [(class left) (class right)]))
 ;just pushes the conflict down the keys of the tree.
 ;We can definitely do this, because we have two associatives.
 ;
@@ -747,7 +769,7 @@
               (cond
                 (contains? common-keys k)
          ;key conflicts. Put in conflict.
-                (->Conflicting (get left k) (get right k))
+                (->Conflict (get left k) (get right k))
                 (contains? left-keys k)
                 (get left k)
                 :else
@@ -837,136 +859,3 @@
       (or (= del unmerged)
           (= del (this-hash unmerged)))
       (->Mergable ins unmerged))))
-
-;; (defmulti merge-change
-;;   (fn [{:keys [patch unmerged]}]
-;;     (class (:ins patch))))
-;; (defmethod merge-change :default
-;;   [{:key [patch unmerged]}]
-;;   ())
-;; (defmulti conflict-gcp
-;;   (fn [{:keys [patch unmerged] :as conflict} & _]
-;;     (class unmerged)))
-
-;; (defmethod conflict-gcp Annotated
-;;   [{:keys [patch unmerged] :as conflict} patcher]
-;;   (let [{:keys [ins del]} patch
-;;         {:keys [ann unannotated]} unmerged]
-;;     ;first, check if we can apply the patch right here.
-;;     (if (= (this-hash del) (this-hash patch))
-;;       ;apply patch.
-;;       (patcher patch ins)
-;;       conflict)))
-
-;; (defmethod merge-change Annotated
-;;   [{:keys [patch unmerged] :as conflict}]
-;;   (let [{:keys [ins del]} patch]
-;;     (if (and (annotated? unmerged)
-;;              (= del (this-hash unmerged)))
-;;       ins
-;;       conflict)))
-
-;; (defmulti merge-patch
-;;   ;handle cases where patch is Change, Substituted,
-;;   ;or other. unmerged MUST be annotated.
-;;   (fn [{:keys [patch unmerged] :as conflict}]
-;;     (class patch)))
-;; (defmethod merge-patch :default
-;;   [conflict] conflict)
-;; (defmethod merge-patch Change
-;;   [conflict] (merge-change conflict))
-;; (defmethod merge-patch Substituted
-;;   [{:keys [hash]} unmerged] )
-;; (defmethod merge-patch Substituted)
-;; (defmethod merge-change [Annotated Annotated]
-;;   [{:keys [patch unmerged]}]
-;;   (let [{:keys [ins del]} patch]
-;;     ))
-
-
-;; (defmulti merge-annotated
-;;   ;need cases for the patch being a Change,
-;;   ;a VectorChange, or an annotated recursive
-;;   ;node that's associative, or a leaf node.
-;;   ;Need cases for unmerged being an Annotated
-;;   ;or a leaf node.
-
-;;   (fn [{:keys [patch unmerged]}]
-;;     [(class (:ins patch))
-;;      (class unmerged)]))
-
-;; (defmethod merge-annotated :default
-;;   [conflict])
-
-;; (defmethod merge-annotated [Annotated Annotated]
-;;   [{:keys [ins del] :as change}
-;;    unmerged]
-;;   (if (= (this-hash ins) (this-hash del) (this-hash unmerged)))
-;;   (if (= (this-hash ins) (this-hash del))
-;;     (->Substituted (this-hash ins))
-;;     (let [ins-children (:unannotated ins)
-;;           del-children (:unannotated del)
-;;           {:keys [ins-hash del-hash deleted inserted common]}
-;;           (get-common-subtrees (f/fmap :unannotated ch))]
-;;       (if (= (keys ins-children) (keys del-children))
-;;     ;push change down the insertion tree.
-;;         (->Annotated
-;;          (->DiffHashed ins-hash del-hash nil)
-;;          (reduce-kv
-;;        ;mark all children as changes.
-;;           (fn [acc k v]
-;;             (let [deleted-child
-;;                   (get del-children k)
-;;                   subs-child (if (annotated? deleted-child)
-;;                                (this-hash deleted-child)
-;;                                deleted-child)]
-;;               (if (= v deleted-child)
-;;                 acc
-;;                 (assoc acc k
-;;                        (->Change v
-;;                                  subs-child)))))
-;;           {}
-;;           (:unannotated ins)))
-;;     ;keys are not the same. Irreducible change.
-;;     ;Wrap inserted children with InChange.
-;;         (f/fmap
-;;          (fn [child] (->InChange common child)) (:ins ch))))))
-
-
-
-;; (defmethod merge-annotated [Change true]
-;;   [{:keys [patch
-;;            unmerged] :as conflict}]
-;;   (let [{:keys [ins del]} patch
-;;         {:keys [ann unanotated]} unmerged]
-;;     (if (= (:this-hash ann) (:this-hash del))
-;;       (->Inserted (:unannotated ins))
-;;       conflict)))
-;;     ;The insert should either match the hash
-;;     ;of del, or be equal.
-;;   (let [{:keys [ins del]} patch]
-;;     (if (annotated? unmerged)
-
-;;       (if (= unmerged ins)
-;;         (->Inserted ins)
-;;         conflict))))
-
-;; ;Contains map of metavariables mapping to subtrees.
-;; (defrecord VecMap [m v])
-
-
-;; ;{ hash0: {:a {:d 1} :b 2} hash2: {:a {:d 1} :c 3} }
-;; ;gcp: hash0: {:outer {:a $d :b 2 } hash2: {:outer {:a $d :c 3}}
-;; ;pull up common subtrees for every tree in the vector,
-;; ;putting them in m. Then, values can be recursively
-;; ;substituted to recreate the unsubbed vector.
-
-;; ;Like VecMap, except contains an edit-script
-;; ;[[:- _deleted] [:+ _inserted] ...]
-
-
-;; (extend-protocol Maplike
-;;   VecChange
-;;   (view-map [self] (:m self))
-;;   (merge-with [self other]
-;;     ()))
